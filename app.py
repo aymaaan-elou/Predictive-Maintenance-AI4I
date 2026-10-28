@@ -3,7 +3,7 @@ import pandas as pd
 import joblib
 
 # Configuration de la page
-st.set_page_config(page_title="Prédiction de Panne - Stellantis", page_icon="🚗")
+st.set_page_config(page_title="Prédiction de Panne", page_icon="🚗")
 st.title("🚗 Maintenance Prédictive des Véhicules Connectés")
 st.markdown("Simulez les données de capteurs pour prédire le risque de panne (Projet IA - Inspiré de l'Industrie 4.0).")
 
