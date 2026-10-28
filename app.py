@@ -1,48 +1,101 @@
 import streamlit as st
 import pandas as pd
 import joblib
+import numpy as np
 
 # Configuration de la page
-st.set_page_config(page_title="Prédiction de Panne", page_icon="🚗")
-st.title("🚗 Maintenance Prédictive des Véhicules Connectés")
-st.markdown("Simulez les données de capteurs pour prédire le risque de panne (Projet IA - Inspiré de l'Industrie 4.0).")
+st.set_page_config(page_title="Détection de Fraude Bancaire - XAI", page_icon="🛡️", layout="wide")
+st.title("🛡️ Détection de Fraude Bancaire")
+st.markdown("Simulez une transaction pour obtenir une prédiction de fraude avec explication (XGBoost + SMOTE).")
 
 # Charger le modèle (mis en cache pour ne pas ralentir l'app)
 @st.cache_resource
 def load_model():
-    return joblib.load('model_maintenance.pkl')
+    return joblib.load('model_fraud.pkl')
 
-model = load_model()
+try:
+    model = load_model()
+except Exception as e:
+    st.error(f"Erreur lors du chargement du modèle : {e}")
+    st.stop()
 
-# Création des curseurs pour l'utilisateur
-st.sidebar.header("Paramètres des capteurs")
+# Récupérer l'ordre exact des colonnes attendues par le modèle
+try:
+    xgb_model = model.named_steps['model']
+    expected_columns = xgb_model.get_booster().feature_names
+except Exception as e:
+    st.error(f"Erreur lors de l'extraction des noms de colonnes du modèle : {e}")
+    st.stop()
 
-temp_air = st.sidebar.slider("Température de l'air (K)", 295.0, 305.0, 300.0)
-temp_process = st.sidebar.slider("Température du processus (K)", 305.0, 315.0, 310.0)
-vitesse = st.sidebar.slider("Vitesse de rotation (rpm)", 1000, 3000, 1500)
-couple = st.sidebar.slider("Couple (Nm)", 0.0, 80.0, 40.0)
-usure = st.sidebar.slider("Usure de l'outil (min)", 0, 250, 100)
+# Le seuil optimal trouvé lors de l'entraînement (à ajuster selon votre résultat Colab)
+# Si vous n'avez pas sauvegardé le seuil, mettez la valeur par défaut 0.5
+BEST_THRESHOLD = 0.85 # Exemple : à remplacer par votre valeur exacte trouvée dans Colab
 
-# Bouton de prédiction
-if st.button("Prédire le risque de panne"):
-    # Préparer les données d'entrée
-    input_data = pd.DataFrame([{
-        'Air temperature [K]': temp_air,
-        'Process temperature [K]': temp_process,
-        'Rotational speed [rpm]': vitesse,
-        'Torque [Nm]': couple,
-        'Tool wear [min]': usure
-    }])
+# ==========================================
+# BARRE LATÉRALE : Paramètres de la transaction
+# ==========================================
+st.sidebar.header("Paramètres de la transaction")
+
+st.sidebar.subheader("Montant et temps")
+amount = st.sidebar.number_input("Montant (Amount)", min_value=0.0, max_value=50000.0, value=100.0, step=10.0)
+time_val = st.sidebar.number_input("Temps (Time)", min_value=0.0, max_value=200000.0, value=50000.0, step=100.0)
+
+st.sidebar.subheader("Features PCA (V1-V10)")
+st.sidebar.caption("Les valeurs V1-V28 sont anonymisées. Ajustez ces curseurs pour simuler une transaction suspecte.")
+
+# Générer les sliders pour les 10 premières features PCA (les plus importantes)
+v_values = {}
+for i in range(1, 11):
+    # On donne une plage réaliste basée sur les données normales (-5 à 5)
+    v_values[f'V{i}'] = st.sidebar.slider(f'V{i}', -5.0, 5.0, 0.0, step=0.1)
+
+# ==========================================
+# PRÉDICTION
+# ==========================================
+if st.button("Analyser la transaction", type="primary"):
+    # 1. Construire le dictionnaire avec TOUTES les 30 colonnes
+    input_dict = {'Time': time_val, 'Amount': amount}
     
-    # Prédiction
-    prediction = model.predict(input_data)[0]
-    probabilite = model.predict_proba(input_data)[0][1] * 100
+    # Remplir V1 à V28 (V1-V10 avec les sliders, V11-V28 à 0 par défaut)
+    for i in range(1, 29):
+        input_dict[f'V{i}'] = v_values.get(f'V{i}', 0.0)
     
-    # Affichage du résultat
-    st.subheader("Résultat de l'analyse :")
-    if prediction == 1:
-        st.error(f"⚠️ **Risque de panne élevé ({probabilite:.1f}%)**")
-        st.write("Une intervention de maintenance est recommandée.")
-    else:
-        st.success(f"✅ **Fonctionnement normal (Risque : {probabilite:.1f}%)**")
-        st.write("La machine fonctionne dans les paramètres attendus.")
+    # 2. Créer le DataFrame
+    input_df = pd.DataFrame([input_dict])
+    
+    # 3. CORRECTION : Réaligner les colonnes selon l'ordre exact du modèle
+    input_df = input_df[expected_columns]
+    
+    # 4. Prédiction
+    try:
+        # Probabilité brute
+        probability = model.predict_proba(input_df)[0][1] * 100
+        
+        # Application du seuil personnalisé (car la fraude est rare, le seuil 0.5 n'est pas idéal)
+        prediction = 1 if (probability / 100) >= BEST_THRESHOLD else 0
+        
+        # 5. Affichage
+        st.subheader("Résultat de l'analyse")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            if prediction == 1:
+                st.error(f"⚠️ **ALERTE : Transaction suspecte**")
+            else:
+                st.success(f"✅ **Transaction normale**")
+                
+        with col2:
+            st.metric(label="Probabilité de fraude", value=f"{probability:.1f}%")
+            
+        if prediction == 1:
+            st.warning(f"Le modèle a détecté un risque dépassant le seuil critique de {BEST_THRESHOLD*100}%. Une vérification manuelle est recommandée.")
+        else:
+            st.info(f"Le risque est en dessous du seuil de {BEST_THRESHOLD*100}%. La transaction peut être validée.")
+            
+    except Exception as e:
+        st.error(f"Erreur lors de la prédiction : {e}")
+        st.write("Vérifiez que l'ordre et le nombre de colonnes correspondent exactement à ceux de l'entraînement.")
+
+st.markdown("---")
+st.caption("Projet réalisé dans le cadre de mon exploration du Master Big Data & IA. Modèle : XGBoost + SMOTE.")
